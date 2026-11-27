@@ -1,0 +1,8 @@
+{
+  "name": "Ревью требований",
+  "description": "Проверка спецификаций и требований на противоречия, пробелы и выполнимость со ссылками на исходный текст и экспортом отчётов в PDF, Markdown и TXT.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

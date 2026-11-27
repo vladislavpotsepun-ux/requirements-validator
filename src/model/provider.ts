@@ -1,43 +1,124 @@
-import { ApiError, GoogleGenAI } from '@google/genai';
+import { ApiError, GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { ReviewError } from '../review/errors.js';
-import type { ModelRequest, ReviewModel } from '../review/types.js';
+import type { ModelRequest, ProviderId, ProviderOption, ReviewModel, ReviewPhase } from '../review/types.js';
 import { codexModel } from './codex.js';
 
 const geminiDefault = 'gemini-4-hydrogen';
 const localDefault = 'qwen3.5:9b';
+const localDefaultBaseUrl = 'http://127.0.0.1:11434/v1';
 const geminiTimeout = 270_000;
 const localTimeout = 510_000;
+const localProbeTimeout = 600;
 const localPromptBytes = 23_800;
 const maxTokens = { extract: 7168, individual: 6144, set: 8192 } as const;
+const geminiThinkingLevels: Record<ReviewPhase, ThinkingLevel> = {
+  extract: ThinkingLevel.LOW,
+  individual: ThinkingLevel.LOW,
+  set: ThinkingLevel.MEDIUM,
+};
 
-export function createReviewModel(environment = process.env, fetcher: typeof fetch = fetch): ReviewModel {
-  const provider = environment.LLM_PROVIDER?.trim().toLowerCase() || 'gemini';
+export function createReviewModel(
+  environment = process.env,
+  fetcher?: typeof fetch,
+  providerOverride?: ProviderId,
+): ReviewModel {
+  const provider = providerOverride ?? (environment.LLM_PROVIDER?.trim().toLowerCase() || 'gemini');
   if (provider === 'codex') {
     return codexModel(environment.CODEX_MODEL?.trim() || 'gpt-6.2-sol');
   }
   if (provider === 'local') {
     const model = environment.LOCAL_MODEL?.trim() || localDefault;
-    const url = localEndpoint(environment.LOCAL_BASE_URL?.trim() || 'http://127.0.0.1:11434/v1');
-    return localModel(model, url, fetcher);
+    const url = localEndpoint(environment.LOCAL_BASE_URL?.trim() || localDefaultBaseUrl);
+    return localModel(model, url, fetcher ?? fetch);
   }
   if (provider !== 'gemini') {
     throw new ReviewError('MODEL_CONFIG', 'LLM_PROVIDER must be gemini, local, or codex.');
   }
   const apiKey = environment.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     throw new ReviewError('MODEL_CONFIG', 'Set GEMINI_API_KEY in the environment or .env file.');
   }
   return geminiModel(environment.GEMINI_MODEL?.trim() || geminiDefault, apiKey, fetcher);
 }
 
-function geminiModel(model: string, apiKey: string, fetcher: typeof fetch): ReviewModel {
+export async function detectAvailableProviders(
+  environment = process.env,
+  fetcher: typeof fetch = fetch,
+): Promise<ProviderOption[]> {
+  const configured = environment.LLM_PROVIDER?.trim().toLowerCase() || 'gemini';
+  const options: ProviderOption[] = [];
+
+  const apiKey = environment.GEMINI_API_KEY?.trim();
+  const geminiOption: ProviderOption | undefined = apiKey && apiKey !== 'MY_GEMINI_API_KEY'
+    ? { id: 'gemini', provider: 'Gemini', model: environment.GEMINI_MODEL?.trim() || geminiDefault }
+    : undefined;
+
+  let localOption: ProviderOption | undefined;
+  const localModelName = environment.LOCAL_MODEL?.trim() || localDefault;
+  const localBaseUrl = environment.LOCAL_BASE_URL?.trim() || localDefaultBaseUrl;
+  try {
+    const probeUrl = localModelsEndpoint(localBaseUrl);
+    const reachable = await probeLocalEndpoint(probeUrl, fetcher);
+    if (reachable || configured === 'local') {
+      localOption = { id: 'local', provider: 'Local', model: localModelName };
+    }
+  } catch {
+    // Ignore invalid LOCAL_BASE_URL when probing optional fallback.
+  }
+
+  const codexOption: ProviderOption | undefined = configured === 'codex'
+    ? { id: 'codex', provider: 'Codex CLI', model: environment.CODEX_MODEL?.trim() || 'gpt-6.2-sol' }
+    : undefined;
+
+  const byId: Partial<Record<ProviderId, ProviderOption>> = {
+    gemini: geminiOption,
+    local: localOption,
+    codex: codexOption,
+  };
+  const order: ProviderId[] = configured === 'local'
+    ? ['local', 'gemini', 'codex']
+    : configured === 'codex'
+      ? ['codex', 'gemini', 'local']
+      : ['gemini', 'local', 'codex'];
+
+  for (const id of order) {
+    const option = byId[id];
+    if (option) {
+      options.push(option);
+    }
+  }
+  return options;
+}
+
+async function probeLocalEndpoint(url: URL, fetcher: typeof fetch): Promise<boolean> {
+  try {
+    const response = await fetcher(url, {
+      method: 'GET',
+      redirect: 'error',
+      signal: AbortSignal.timeout(localProbeTimeout),
+    });
+    void response.body?.cancel().catch(() => undefined);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function supportsThinkingLevel(model: string): boolean {
+  return /^gemini-(?:3|4)(?:[.-]|$)/iu.test(model);
+}
+
+function geminiModel(model: string, apiKey: string, fetcher?: typeof fetch): ReviewModel {
   const gemini = new GoogleGenAI({
     apiKey,
     vertexai: false,
     httpOptions: {
-      fetch: fetcher,
+      ...(fetcher ? { fetch: fetcher } : {}),
       timeout: geminiTimeout,
-      retryOptions: { attempts: 3, initialDelay: 2.5, maxDelay: 15 },
+      retryOptions: { attempts: 5, initialDelay: 2, maxDelay: 20 },
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
     },
   });
   return {
@@ -52,7 +133,9 @@ function geminiModel(model: string, apiKey: string, fetcher: typeof fetch): Revi
             systemInstruction: instructions,
             responseMimeType: 'application/json',
             responseJsonSchema: schema,
-            maxOutputTokens: maxTokens[phase],
+            ...(supportsThinkingLevel(model)
+              ? { thinkingConfig: { thinkingLevel: geminiThinkingLevels[phase] } }
+              : {}),
             abortSignal: signal,
           },
         });
@@ -71,7 +154,7 @@ function geminiModel(model: string, apiKey: string, fetcher: typeof fetch): Revi
   };
 }
 
-function localEndpoint(baseUrl: string): URL {
+function parseLoopbackBase(baseUrl: string): URL {
   let base: URL;
   try {
     base = new URL(baseUrl);
@@ -83,7 +166,19 @@ function localEndpoint(baseUrl: string): URL {
     || base.search || base.hash) {
     throw new ReviewError('MODEL_CONFIG', 'LOCAL_BASE_URL must be a loopback HTTP endpoint.');
   }
-  base.pathname = base.pathname.replace(/\/+$/u, '') + '/chat/completions';
+  base.pathname = base.pathname.replace(/\/+$/u, '');
+  return base;
+}
+
+function localEndpoint(baseUrl: string): URL {
+  const base = parseLoopbackBase(baseUrl);
+  base.pathname += '/chat/completions';
+  return base;
+}
+
+function localModelsEndpoint(baseUrl: string): URL {
+  const base = parseLoopbackBase(baseUrl);
+  base.pathname += '/models';
   return base;
 }
 

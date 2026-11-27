@@ -9,16 +9,28 @@ import { ReviewError } from './review/errors.js';
 import { analyzeDocument } from './review/pipeline.js';
 import { renderReportFile } from './review/report-file.js';
 import { defaultReportFormat, reportFileName, reportFormatOptions, reportFormats } from './review/report-formats.js';
+import type { ReviewMode } from './review/types.js';
 
 async function run() {
   const args = process.argv.slice(2);
-  const usage = 'Usage: npm run review -- <requirements.pdf|.md|.markdown|.txt> [report.pdf|.md|.markdown|.txt]';
+  const usage = 'Usage: npm run review -- [--fintech] <requirements.pdf|.md|.markdown|.txt> [report.pdf|.md|.markdown|.txt]';
   if (args.length === 1 && args[0] === '--help') {
     console.log(usage);
     return;
   }
-  const [input, reportPath] = args;
-  if (!input || args.length > 2) {
+  let fintechFlag = false;
+  const positional: string[] = [];
+  for (const arg of args) {
+    if (arg === '--fintech') {
+      fintechFlag = true;
+    } else if (arg.startsWith('--')) {
+      throw new ReviewError('INVALID_DOCUMENT', usage);
+    } else {
+      positional.push(arg);
+    }
+  }
+  const [input, reportPath] = positional;
+  if (!input || positional.length > 2) {
     throw new ReviewError('INVALID_DOCUMENT', usage);
   }
   const replaceExisting = reportPath !== undefined;
@@ -35,6 +47,9 @@ async function run() {
   }
 
   loadEnvironment();
+  const mode: ReviewMode = fintechFlag || process.env.REVIEW_MODE?.trim().toLowerCase() === 'fintech'
+    ? 'fintech'
+    : 'standard';
   const size = await stat(input);
   if (!size.isFile() || size.size > limits.bytes) {
     throw new ReviewError('LIMIT_EXCEEDED', 'Choose a regular input file of at most 10 MiB.');
@@ -49,6 +64,7 @@ async function run() {
   };
   const report = await analyzeDocument(source, model, {
     version: agentVersion(),
+    mode,
     onProgress: ({ phase, completed, total }) => console.error(`${phaseLabels[phase]} (${completed + 1}/${total})`),
   });
   const { bytes } = await renderReportFile(report, format);

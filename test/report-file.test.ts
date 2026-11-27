@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadDocument } from '../src/review/document.js';
 import { renderReportFile } from '../src/review/report-file.js';
-import { renderMarkdown } from '../src/review/report.js';
+import {
+  formatClarifyingQuestionsText, groupClarifyingQuestions, renderMarkdown,
+} from '../src/review/report.js';
 import type { ReviewReport } from '../src/review/types.js';
 
 const report: ReviewReport = {
@@ -114,3 +116,70 @@ test('renders TXT as plain text with requirement evidence', async () => {
   assert.match(text, /\nПаспорт прогона\n[\s\S]*\nОглавление\n[\s\S]*\nСводка\n\nРазработку и тестирование/u);
   assert.match(text, /REQ-001[\s\S]*Ф-1[\s\S]*Порог 1 000 ₸ → push\./u);
 });
+
+test('renders fintech mode metadata, suggested rewrites, and groups clarifying questions by stakeholder', async () => {
+  const fintechReport: ReviewReport = {
+    ...structuredClone(report),
+    run: { ...report.run, mode: 'fintech' },
+    summary: { requirements: 1, defects: 1, blockingDefects: 1, risks: 1, questions: 0 },
+    readiness: { development: 'blocked', testing: 'blocked' },
+    findings: [
+      {
+        id: 'F-001',
+        scope: 'individual',
+        criterion: 'unambiguity',
+        kind: 'defect',
+        severity: 'blocker',
+        affects: 'both',
+        owner: 'product',
+        description: 'Не указан способ округления суммы порога.',
+        impact: 'Порог может срабатывать по-разному.',
+        action: 'Зафиксировать правило округления.',
+        suggestedRewrite: 'Порог 1 000,00 ₸ округляется по правилу half-even (банковское округление).',
+        clarifyingQuestion: 'Какое правило округления применять к суммам в тиынах?',
+        requirementIds: ['REQ-001'],
+        evidence: [{
+          blockId: 'B0001',
+          quote: 'Порог 1 000 ₸ → push.',
+          location: { section: [], page: 2, startLine: 4, endLine: 4 },
+        }],
+      },
+      {
+        id: 'F-002',
+        scope: 'set',
+        criterion: 'completeness',
+        kind: 'risk',
+        severity: 'major',
+        affects: 'development',
+        owner: 'security',
+        description: 'Не заданы правила маскирования номера карты в push-уведомлении.',
+        impact: 'Утечка PAN в журнал уведомлений.',
+        action: 'Указать формат маскирования карты.',
+        clarifyingQuestion: 'Допустимо ли выводить последние 4 цифры PAN в тексте push-уведомления?',
+        requirementIds: ['REQ-001'],
+        evidence: [{
+          blockId: 'B0001',
+          quote: 'Порог 1 000 ₸ → push.',
+          location: { section: [], page: 2, startLine: 4, endLine: 4 },
+        }],
+      },
+    ],
+  };
+
+  const markdown = renderMarkdown(fintechReport);
+  assert.match(markdown, /Режим проверки — FinTech \/ Banking аудит/u);
+  assert.match(markdown, /Предлагаемая формулировка — «Порог 1 000,00 ₸/u);
+  assert.match(markdown, /Вопрос автору — Какое правило округления/u);
+
+  const groups = groupClarifyingQuestions(fintechReport.findings);
+  assert.deepEqual(groups.map(({ role }) => role), ['product', 'security']);
+  const text = formatClarifyingQuestionsText(groups, fintechReport.run.documentTitle);
+  assert.match(text, /Продукт \/ БА:/u);
+  assert.match(text, /Безопасность:/u);
+  assert.match(text, /\[F-001 \(REQ-001\)\]/u);
+
+  const pdf = await renderReportFile(fintechReport, 'pdf');
+  const parsed = await loadDocument(pdf.name, pdf.bytes);
+  assert.ok(parsed.blocks.some(({ text: blockText }) => blockText.includes('FinTech / Banking аудит')));
+});
+

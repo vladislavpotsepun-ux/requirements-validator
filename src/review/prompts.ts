@@ -19,6 +19,16 @@ Give one concrete issue per finding. State its impact (“impact”) and a speci
 question (“action”). Describe two competing interpretations for a contradiction when applicable.
 Use up to two short sentences for the description and one sentence each for the impact and action.
 Each claim must follow from its evidence. Omit hypothetical problems and stylistic preferences.
+Also assign "owner" to the primary role who should resolve it: "product" (business rules, scope,
+product decisions), "backend" (API contracts, data models, integrations, performance), "qa"
+(acceptance criteria, testability, edge-case checks), or "security" (authorization, PII/PCI masking,
+audit trails, compliance).
+When a requirement wording is ambiguous, incomplete, or testable only after tightening, provide a
+concrete, ready-to-paste improved Russian wording in "suggestedRewrite" (1-2 clear sentences with
+placeholders like [указать значение] only where a project decision is still required). Omit
+"suggestedRewrite" if no safe rewrite can be proposed without inventing product behavior.
+When the author or stakeholder must answer a specific question to unblock the issue, provide one
+direct, copy-ready Russian question in "clarifyingQuestion".
 `;
 
 export const extractPrompt = boundaries + `
@@ -85,4 +95,28 @@ needs only the coverage its stated goal requires.
 Report at most 12 findings. Put clear material contradictions first, followed by the most important
 gaps and feasibility questions. Write the description, impact, and action as one short sentence
 each, at most 22 words per field. Cover different root causes within this limit.
+`;
+
+export const fintechIndividualAddon = `
+FINTECH / BANKING AUDIT MODE IS ACTIVE.
+In addition to standard ISO 29148 checks, pay special attention to financial correctness within the
+document's stated scope:
+- Money precision, currencies, rounding rules, and exact threshold boundary semantics (< vs <=, inclusive vs exclusive).
+- Timezones and cutoffs (UTC vs bank/client local time for daily/monthly limits, billing periods, and SLA clocks).
+- Idempotency on write/payment/notification operations (duplicate requests, retries, and double triggers).
+- Reversals, cancellations, refunds, holds, and partial failures when the item touches transactions or limits.
+- Masking of PII/PCI data (PAN, CVV, account numbers, client contacts) in logs, responses, and alerts.
+Report only findings genuinely applicable to the item's scope; do not invent unrelated compliance requirements.
+`;
+
+export const fintechSetAddon = `
+FINTECH / BANKING AUDIT MODE IS ACTIVE.
+In addition to standard set checks, audit the whole specification for critical financial-system gaps
+grounded in the document's scope:
+- Idempotency & duplicate-event handling across retries, webhooks, queues, and state transitions.
+- Currency consistency, precision/rounding, and boundary inclusivity across rules, API payloads, and examples.
+- Timezone & period-cutoff consistency (e.g., month/day boundary resets vs processing/settlement timestamps).
+- Reversals, chargebacks, cancellations, and out-of-order events affecting balances, limits, or alerts.
+- Authorization, tenant/account ownership checks, PII/PCI data masking, and immutable audit logging for state changes.
+Assign security/audit/masking gaps to owner "security" and anchor every finding to existing source block IDs.
 `;

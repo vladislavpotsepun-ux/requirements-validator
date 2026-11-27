@@ -49,6 +49,8 @@ export type Readiness = 'ready' | 'conditional' | 'blocked';
 export type Severity = 'blocker' | 'major' | 'minor';
 export type FindingKind = 'defect' | 'risk' | 'question';
 export type ReviewPhase = 'extract' | 'individual' | 'set';
+export type ReviewMode = 'standard' | 'fintech';
+export type StakeholderRole = 'product' | 'backend' | 'qa' | 'security';
 
 export interface Finding {
   id: string;
@@ -57,9 +59,12 @@ export interface Finding {
   kind: FindingKind;
   severity: Severity;
   affects: 'development' | 'testing' | 'both';
+  owner?: StakeholderRole;
   description: string;
   impact: string;
   action: string;
+  suggestedRewrite?: string;
+  clarifyingQuestion?: string;
   evidence: Evidence[];
   requirementIds: string[];
 }
@@ -80,6 +85,7 @@ export interface ReviewReport {
     provider: 'Gemini' | 'Local' | 'Codex CLI';
     model: string;
     version: string;
+    mode?: ReviewMode;
   };
   summary: {
     requirements: number;
@@ -92,6 +98,7 @@ export interface ReviewReport {
   unreadablePages: number[];
   requirements: ReviewedRequirement[];
   findings: Finding[];
+  sourceBlocks?: SourceBlock[];
 }
 
 export interface ModelRequest {
@@ -114,7 +121,7 @@ export interface ReviewProgress {
   total: number;
 }
 
-export type WebErrorCode = ReviewErrorCode | 'ACCESS_DENIED' | 'INTERNAL_ERROR';
+export type WebErrorCode = ReviewErrorCode | 'ACCESS_DENIED' | 'JOB_NOT_FOUND' | 'INTERNAL_ERROR';
 
 export interface DownloadableReport {
   name: string;
@@ -123,15 +130,27 @@ export interface DownloadableReport {
 }
 
 export type ReviewEvent =
+  | { type: 'started'; jobId: string; documentName: string }
   | ({ type: 'progress' } & ReviewProgress)
   | { type: 'report'; report: ReviewReport; file: DownloadableReport }
+  | { type: 'cancelled' }
   | { type: 'error'; code: WebErrorCode }
   | { type: 'heartbeat' };
+
+export type ProviderId = 'gemini' | 'local' | 'codex';
+
+export interface ProviderOption {
+  id: ProviderId;
+  provider: ReviewModel['provider'];
+  model: string;
+}
 
 export interface WebInfo {
   configured: boolean;
   model?: string;
   provider?: ReviewModel['provider'];
+  providers?: ProviderOption[];
+  defaultMode?: ReviewMode;
   maxBytes: number;
   requiresAccessCode: boolean;
 }

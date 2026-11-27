@@ -215,3 +215,35 @@ test('rejects different requirements that use the same excerpt instead of silent
     { code: 'INVALID_MODEL_OUTPUT' },
   );
 });
+
+test('supports fintech audit mode, attaches sourceBlocks, and preserves rewrite/question/owner fields', async () => {
+  const document = await loadDocument('alerts.md', Buffer.from(documentText));
+  const seenInstructions: Record<string, string> = {};
+  const fintechModel: ReviewModel = {
+    provider: 'Local',
+    model: 'test-model',
+    async generate({ phase, instructions }) {
+      seenInstructions[phase] = instructions;
+      if (phase === 'extract') return extraction;
+      if (phase === 'individual') return individual;
+      return {
+        findings: [{
+          ...conflictingRules,
+          owner: 'product',
+          suggestedRewrite: 'Отправлять не более одного уведомления в календарный месяц; при изменении порога лимит сбрасывается.',
+          clarifyingQuestion: 'Сбрасывается ли месячный лимит уведомлений после изменения порога пользователем?',
+        }],
+      };
+    },
+  };
+  const report = await analyzeDocument(document, fintechModel, { ...run, mode: 'fintech' });
+
+  assert.equal(report.run.mode, 'fintech');
+  assert.ok(seenInstructions.individual?.includes('FINTECH / BANKING AUDIT MODE'));
+  assert.ok(seenInstructions.set?.includes('FINTECH / BANKING AUDIT MODE'));
+  assert.equal(report.sourceBlocks?.length, document.blocks.length);
+  assert.equal(report.findings[0]?.owner, 'product');
+  assert.match(report.findings[0]?.suggestedRewrite ?? '', /календарный месяц/u);
+  assert.match(report.findings[0]?.clarifyingQuestion ?? '', /Сбрасывается ли месячный лимит/u);
+});
+

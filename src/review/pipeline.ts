@@ -1,14 +1,17 @@
 import { z } from 'zod';
 import { ReviewError } from './errors.js';
-import { extractPrompt, individualPrompt, setPrompt } from './prompts.js';
+import {
+  extractPrompt, fintechIndividualAddon, fintechSetAddon, individualPrompt, setPrompt,
+} from './prompts.js';
 import { individualCriteria, setCriteria } from './rubric.js';
 import type {
-  Evidence, Finding, Readiness, Requirement, ReviewModel, ReviewPhase, ReviewProgress, ReviewReport,
+  Evidence, Finding, Readiness, Requirement, ReviewMode, ReviewModel, ReviewPhase, ReviewProgress, ReviewReport,
   ReviewedRequirement, SourceBlock, SourceDocument,
 } from './types.js';
 
 const id = z.string().min(1).max(32);
 const explanation = z.string().min(1).max(900);
+const optionalText = z.string().max(900).optional();
 const extractionSchema = z.strictObject({
   requirements: z.array(z.strictObject({
     candidateId: id,
@@ -21,9 +24,12 @@ const findingFields = {
   kind: z.enum(['defect', 'risk', 'question']),
   severity: z.enum(['blocker', 'major', 'minor']),
   affects: z.enum(['development', 'testing', 'both']),
+  owner: z.enum(['product', 'backend', 'qa', 'security']).optional(),
   description: explanation,
   impact: explanation,
   action: explanation,
+  suggestedRewrite: optionalText,
+  clarifyingQuestion: z.string().max(500).optional(),
 };
 const itemReview = z.strictObject({
   id,
@@ -41,6 +47,7 @@ const setSchema = z.strictObject({ findings: z.array(setFinding).max(12) });
 
 interface Options {
   version: string;
+  mode?: ReviewMode;
   date?: Date;
   signal?: AbortSignal;
   onProgress?: (progress: ReviewProgress) => void;
@@ -57,6 +64,9 @@ export async function analyzeDocument(
   options: Options,
 ): Promise<ReviewReport> {
   const started = options.date ?? new Date();
+  const mode: ReviewMode = options.mode ?? 'standard';
+  const itemInstructions = mode === 'fintech' ? individualPrompt + fintechIndividualAddon : individualPrompt;
+  const setInstructions = mode === 'fintech' ? setPrompt + fintechSetAddon : setPrompt;
   const inventory: InventoryEntry[] = [];
   const extractBatches = groupBlocks(source.blocks);
   const generate = makeGenerator(model, options.signal);
@@ -93,7 +103,7 @@ export async function analyzeDocument(
     options.onProgress?.({ phase: 'individual', completed: index, total: itemBatches.length });
     itemReviews.push(...await generate(
       'individual',
-      individualPrompt,
+      itemInstructions,
       { items, context: adjacentContext(source.blocks, blockIndexes, items) },
       individualSchema,
       ({ reviews }) => orderReviews(reviews, items),
@@ -101,13 +111,13 @@ export async function analyzeDocument(
   }
   const itemFindings = catalog.flatMap((item, index): UnnumberedFinding[] =>
     itemReviews[index]!.findings.map((finding) => ({
-      ...finding, scope: 'individual', evidence: [item.source], requirementIds: [item.id],
+      ...normalizeOptionalFindingFields(finding), scope: 'individual', evidence: [item.source], requirementIds: [item.id],
     })));
 
   options.onProgress?.({ phase: 'set', completed: 0, total: 1 });
   const setFindings = await generate(
     'set',
-    setPrompt,
+    setInstructions,
     {
       document: source.title,
       unreadablePages: source.unreadablePages,
@@ -135,6 +145,7 @@ export async function analyzeDocument(
       provider: model.provider,
       model: model.model,
       version: options.version,
+      mode,
     },
     summary: {
       requirements: requirements.length,
@@ -150,6 +161,19 @@ export async function analyzeDocument(
     unreadablePages: source.unreadablePages,
     requirements,
     findings,
+    sourceBlocks: source.blocks,
+  };
+}
+
+function normalizeOptionalFindingFields<T extends { suggestedRewrite?: string; clarifyingQuestion?: string }>(
+  finding: T,
+): T {
+  const suggestedRewrite = finding.suggestedRewrite?.trim() || undefined;
+  const clarifyingQuestion = finding.clarifyingQuestion?.trim() || undefined;
+  return {
+    ...finding,
+    ...(suggestedRewrite ? { suggestedRewrite } : { suggestedRewrite: undefined }),
+    ...(clarifyingQuestion ? { clarifyingQuestion } : { clarifyingQuestion: undefined }),
   };
 }
 
@@ -354,7 +378,7 @@ function verifySetFindings(
       throw invalidOutput('A defect must cite a source statement or a template placeholder as evidence.');
     }
     return {
-      ...finding,
+      ...normalizeOptionalFindingFields(finding),
       scope: 'set',
       evidence: linked,
       requirementIds: references.flatMap((key) => {

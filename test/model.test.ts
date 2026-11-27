@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ModelRequest } from '../src/review/types.js';
-import { createReviewModel } from '../src/model/provider.js';
+import { createReviewModel, detectAvailableProviders } from '../src/model/provider.js';
 
 const request: ModelRequest = {
   phase: 'extract',
@@ -56,4 +56,31 @@ test('rejects a local prompt that cannot safely fit the recommended context', as
     throw new Error('An oversized prompt should not reach the provider.');
   });
   await assert.rejects(model.generate({ ...request, data: 'a'.repeat(25_000) }), { code: 'MODEL_CONTEXT' });
+});
+
+test('detects local provider only when the loopback endpoint responds', async () => {
+  const withLocal = await detectAvailableProviders(
+    { GEMINI_API_KEY: 'test-placeholder', LOCAL_MODEL: 'qwen3.5:9b' },
+    async (url) => {
+      assert.equal(new URL(String(url)).href, 'http://127.0.0.1:11434/v1/models');
+      return Response.json({ data: [{ id: 'qwen3.5:9b' }] });
+    },
+  );
+  assert.deepEqual(withLocal.map(({ id }) => id), ['gemini', 'local']);
+
+  const withoutLocal = await detectAvailableProviders(
+    { GEMINI_API_KEY: 'test-placeholder' },
+    async () => {
+      throw new Error('ECONNREFUSED');
+    },
+  );
+  assert.deepEqual(withoutLocal.map(({ id }) => id), ['gemini']);
+
+  const blockedRemote = await detectAvailableProviders(
+    { GEMINI_API_KEY: 'test-placeholder', LOCAL_BASE_URL: 'https://example.org/v1' },
+    async () => {
+      throw new Error('Remote endpoint must not be probed.');
+    },
+  );
+  assert.deepEqual(blockedRemote.map(({ id }) => id), ['gemini']);
 });
