@@ -247,3 +247,66 @@ test('supports fintech audit mode, attaches sourceBlocks, and preserves rewrite/
   assert.match(report.findings[0]?.clarifyingQuestion ?? '', /Сбрасывается ли месячный лимит/u);
 });
 
+test('sanitizes null optional fields, extra keys, over-limit set findings, and candidate/REQ citations', async () => {
+  const document = await loadDocument('alerts.md', Buffer.from(documentText));
+  const messyModel: ReviewModel = {
+    provider: 'Local',
+    model: 'test-model',
+    async generate({ phase }) {
+      if (phase === 'extract') {
+        return {
+          requirements: [
+            { candidateId: 'B0003', summary: 'Лимит одного уведомления', kind: 'functional', extraField: true },
+            { candidateId: 'B0004.1', summary: 'Повторное уведомление', kind: 'functional' },
+          ],
+        };
+      }
+      if (phase === 'individual') {
+        return {
+          reviews: [
+            {
+              id: 'REQ-001',
+              feasibility: 'feasible',
+              testReadiness: 'ready',
+              findings: [{
+                criterion: 'unambiguity',
+                kind: 'risk',
+                severity: 'minor',
+                affects: 'development',
+                owner: null,
+                description: 'Уточнить границу месяца.',
+                impact: 'Возможна разная трактовка UTC и локального времени.',
+                action: 'Зафиксировать часовой пояс.',
+                suggestedRewrite: null,
+                clarifyingQuestion: null,
+                unexpectedNote: 'ignored',
+              }],
+            },
+            { id: 'REQ-002', feasibility: 'feasible', testReadiness: 'ready', findings: [] },
+          ],
+        };
+      }
+      return {
+        findings: Array.from({ length: 14 }, (_, idx) => ({
+          ...conflictingRules,
+          owner: idx === 0 ? 'Product' : null,
+          suggestedRewrite: idx === 0 ? '   ' : null,
+          clarifyingQuestion: idx === 0 ? 'Какой часовой пояс используется?' : null,
+          evidence: ['B0003.1', 'REQ-002'],
+          description: `Конфликт ${idx + 1}: разные правила лимита.`,
+        })),
+      };
+    },
+  };
+  const report = await analyzeDocument(document, messyModel, run);
+
+  assert.equal(report.requirements.length, 2);
+  assert.ok(report.findings.length <= 13);
+  assert.equal(report.findings.find(({ scope }) => scope === 'set')?.owner, 'product');
+  assert.deepEqual(
+    report.findings.find(({ scope }) => scope === 'set')?.evidence.map(({ blockId }) => blockId),
+    ['B0003', 'B0004'],
+  );
+});
+
+

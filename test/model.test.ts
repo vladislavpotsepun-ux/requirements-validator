@@ -84,3 +84,37 @@ test('detects local provider only when the loopback endpoint responds', async ()
   );
   assert.deepEqual(blockedRemote.map(({ id }) => id), ['gemini']);
 });
+
+test('selects models from GEMINI_MODEL and LLM_MODEL env vars without leaking across providers', async () => {
+  const fromGeminiEnv = createReviewModel({
+    GEMINI_API_KEY: 'test-placeholder',
+    GEMINI_MODEL: 'models/gemini-3.1-flash-lite',
+  });
+  assert.equal(fromGeminiEnv.model, 'gemini-3.1-flash-lite');
+
+  const fromGenericEnv = createReviewModel({
+    GEMINI_API_KEY: 'test-placeholder',
+    LLM_PROVIDER: 'gemini',
+    LLM_MODEL: 'gemini-2.5-flash',
+  });
+  assert.equal(fromGenericEnv.model, 'gemini-2.5-flash');
+
+  // Generic LLM_MODEL for gemini must not override a fallback local provider's model.
+  const localFallback = createReviewModel(
+    {
+      GEMINI_API_KEY: 'test-placeholder',
+      LLM_PROVIDER: 'gemini',
+      LLM_MODEL: 'gemini-2.5-flash',
+    },
+    undefined,
+    'local',
+  );
+  assert.equal(localFallback.model, 'qwen3.5:9b');
+
+  const localFromGeneric = createReviewModel({
+    LLM_PROVIDER: 'local',
+    LLM_MODEL: 'llama3.2',
+  });
+  assert.equal(localFromGeneric.model, 'llama3.2');
+});
+

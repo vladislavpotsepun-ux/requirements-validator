@@ -57,44 +57,48 @@ PDF / Markdown / TXT (до 10 МиБ, 50 стр., 48 000 символов)
 
 ---
 
-## Быстрый старт
+## Быстрый старт (одной командой)
 
-Требуется **Node.js 22.13+**.
+Требуется **Node.js 22.13+**. Работает одинаково на **Windows, macOS и Linux**.
 
-### 1. Установка зависимостей и настройка ключа Gemini
-
-```bash
-npm ci
-cp .env.example .env
-```
-
-Откройте `.env` и укажите `GEMINI_API_KEY` ([получить ключ в Google AI Studio](https://aistudio.google.com/api-keys)). По умолчанию используется модель `gemini-4-hydrogen`.
-
-### 2. Запуск веб-приложения
+### Запуск веб-приложения одной командой
 
 ```bash
-HOST=127.0.0.1 npm run dev
+node scripts/run.mjs
 ```
 
-Откройте [http://localhost:3000](http://localhost:3000), загрузите файл с требованиями (`.pdf`, `.md`, `.markdown`, `.txt`) и нажмите **«Проверить требования»**.
+Скрипт сам установит зависимости (если `node_modules` ещё нет), при первом запуске создаст `.env` из `.env.example` и поднимет веб-интерфейс на [http://127.0.0.1:3000](http://127.0.0.1:3000).
+
+Укажите `GEMINI_API_KEY` в `.env` ([получить ключ в Google AI Studio](https://aistudio.google.com/api-keys)) — по умолчанию используется `gemini-4-hydrogen` (при необходимости смените модель через `GEMINI_MODEL` или `LLM_MODEL`), либо запустите локальный Ollama / `llama-server`.
+
+Если зависимости уже установлены и `.env` готов, можно запускать напрямую:
+
+```bash
+npm run dev
+```
 
 Для продакшен-сборки:
 
 ```bash
-npm run build
-npm start
+npm run build && npm start
 ```
 
-### 3. Запуск из командной строки (CLI)
+### Запуск из командной строки (CLI) одной командой
+
+```bash
+node scripts/run.mjs --review ./requirements.md
+```
+
+Или после `npm install`:
 
 ```bash
 npm run review -- ./requirements.md
 ```
 
-По умолчанию рядом с исходным файлом создаётся `requirements-report.pdf`. Чтобы выбрать формат, путь или включить расширенный FinTech-аудит, передайте флаг `--fintech` и/или второй аргумент (`.pdf`, `.md`, `.markdown` или `.txt`):
+По умолчанию рядом с исходным файлом создаётся `requirements-report.pdf`. Чтобы включить расширенный FinTech-аудит или выбрать формат/путь отчёта (`.pdf`, `.md`, `.markdown`, `.txt`), передайте флаг `--fintech` и/или второй аргумент:
 
 ```bash
-npm run review -- --fintech ./requirements.md ./reports/review.md
+node scripts/run.mjs --review --fintech ./requirements.md ./reports/review.md
 ```
 
 ---
@@ -103,7 +107,7 @@ npm run review -- --fintech ./requirements.md ./reports/review.md
 
 | Провайдер | Как включить | Модель по умолчанию | Лимит входа | Когда использовать |
 | --- | --- | --- | --- | --- |
-| **Gemini API** | `GEMINI_API_KEY` (по умолчанию) | `gemini-4-hydrogen` | 48 000 символов | Основной режим: высокое качество и скорость |
+| **Gemini API** | `GEMINI_API_KEY` (по умолчанию) | `gemini-4-hydrogen` | 48 000 символов | Основной режим: высокое качество и скорость (можно сменить через `GEMINI_MODEL`) |
 | **Локальная модель** | `LLM_PROVIDER=local` или запущенный Ollama / `llama-server` | `qwen3.5:9b` | 23 800 байт на запрос | Офлайн-проверка или резерв при лимитах Gemini |
 | **Codex CLI** | `LLM_PROVIDER=codex` | `gpt-6.2-sol` | 48 000 символов | Запуск через активную локальную сессию Codex CLI |
 
@@ -148,6 +152,7 @@ LLM_PROVIDER=codex npm run review -- ./requirements.pdf ./reports/review.pdf
 | `GEMINI_API_KEY` | Серверный ключ Gemini API | — |
 | `GEMINI_MODEL` | Модель Gemini со структурированным JSON-выводом | `gemini-4-hydrogen` |
 | `LLM_PROVIDER` | Провайдер по умолчанию: `gemini`, `local` или `codex` | `gemini` |
+| `LLM_MODEL` | Универсальное переопределение имени модели для активного `LLM_PROVIDER` | по провайдеру |
 | `LOCAL_BASE_URL` | Loopback HTTP-адрес OpenAI-совместимого локального сервера | `http://127.0.0.1:11434/v1` |
 | `LOCAL_MODEL` | Имя локальной модели | `qwen3.5:9b` |
 | `CODEX_MODEL` | Модель для режима `codex` | `gpt-6.2-sol` |
@@ -187,7 +192,7 @@ LLM_PROVIDER=codex npm run review -- ./requirements.pdf ./reports/review.pdf
 ## Тесты и проверка на примере организаторов
 
 ```bash
-npm test       # 40 автотестов (разбор PDF/MD/TXT, FinTech-режим, валидация ссылок, провайдеры, отчёты, переподключение и отмена)
+npm test       # 42 автотеста (разбор PDF/MD/TXT, FinTech-режим, валидация ссылок, провайдеры, отчёты, переподключение и отмена)
 npm run check  # проверка типов TypeScript
 npm run build  # сборка веб-интерфейса и сервера
 ```
@@ -213,5 +218,5 @@ npm run review -- --fintech /tmp/organizer-requirements.md ./reports/organizer-r
 - `src/server/` и `src/server.ts` — Express-сервер, фоновые задачи с переподключением и отменой, потоковый NDJSON API.
 - `src/cli.ts` — консольный запуск (включая `--fintech`) и атомарное сохранение отчётов.
 - `web/` — React-интерфейс (переключатель режима проверки и модели, split-screen подсветка исходника, предлагаемые формулировки, вкладка вопросов по ролям).
-- `test/` — модульные и интеграционные тесты (40 тестов).
+- `test/` — модульные и интеграционные тесты (42 теста).
 - `assets/fonts/` — шрифты DejaVu Sans 2.37 и лицензия для кириллицы в PDF.

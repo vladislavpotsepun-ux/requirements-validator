@@ -12,8 +12,8 @@ import type {
 const id = z.string().min(1).max(32);
 const explanation = z.string().min(1).max(900);
 const optionalText = z.string().max(900).optional();
-const extractionSchema = z.strictObject({
-  requirements: z.array(z.strictObject({
+const extractionSchema = z.object({
+  requirements: z.array(z.object({
     candidateId: id,
     summary: z.string().min(1).max(380),
     kind: z.enum(['functional', 'nonfunctional', 'interface', 'data', 'acceptance', 'constraint']),
@@ -31,19 +31,19 @@ const findingFields = {
   suggestedRewrite: optionalText,
   clarifyingQuestion: z.string().max(500).optional(),
 };
-const itemReview = z.strictObject({
+const itemReview = z.object({
   id,
   feasibility: z.enum(['feasible', 'conditional', 'unknown', 'infeasible']),
   testReadiness: z.enum(['ready', 'conditional', 'blocked']),
-  findings: z.array(z.strictObject({ criterion: z.enum(individualCriteria), ...findingFields })).max(8),
+  findings: z.array(z.object({ criterion: z.enum(individualCriteria), ...findingFields })).max(8),
 });
-const individualSchema = z.strictObject({ reviews: z.array(itemReview).max(12) });
-const setFinding = z.strictObject({
+const individualSchema = z.object({ reviews: z.array(itemReview).max(12) });
+const setFinding = z.object({
   criterion: z.enum(setCriteria),
   ...findingFields,
   evidence: z.array(id).min(1).max(4),
 });
-const setSchema = z.strictObject({ findings: z.array(setFinding).max(12) });
+const setSchema = z.object({ findings: z.array(setFinding).max(12) });
 
 interface Options {
   version: string;
@@ -177,6 +177,110 @@ function normalizeOptionalFindingFields<T extends { suggestedRewrite?: string; c
   };
 }
 
+const allowedOwners = new Set(['product', 'backend', 'qa', 'security']);
+
+function clampText(value: unknown, maxLength: number): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength - 1).trimEnd()}…` : trimmed;
+}
+
+function sanitizeRawFinding(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return raw;
+  }
+  const record: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  for (const field of ['kind', 'severity', 'affects', 'criterion'] as const) {
+    if (typeof record[field] === 'string') {
+      record[field] = record[field].trim().toLowerCase();
+    }
+  }
+  if (typeof record.owner === 'string') {
+    const normalizedOwner = record.owner.trim().toLowerCase();
+    if (allowedOwners.has(normalizedOwner)) {
+      record.owner = normalizedOwner;
+    } else {
+      delete record.owner;
+    }
+  } else if (record.owner === null || record.owner === undefined) {
+    delete record.owner;
+  }
+  for (const field of ['description', 'impact', 'action'] as const) {
+    record[field] = clampText(record[field], 900);
+  }
+  if (record.suggestedRewrite === null || record.suggestedRewrite === undefined
+    || (typeof record.suggestedRewrite === 'string' && !record.suggestedRewrite.trim())) {
+    delete record.suggestedRewrite;
+  } else {
+    record.suggestedRewrite = clampText(record.suggestedRewrite, 900);
+  }
+  if (record.clarifyingQuestion === null || record.clarifyingQuestion === undefined
+    || (typeof record.clarifyingQuestion === 'string' && !record.clarifyingQuestion.trim())) {
+    delete record.clarifyingQuestion;
+  } else {
+    record.clarifyingQuestion = clampText(record.clarifyingQuestion, 500);
+  }
+  if (Array.isArray(record.evidence)) {
+    const uniqueEvidence = [...new Set(record.evidence.map((entry) =>
+      typeof entry === 'string' ? entry.trim() : entry))];
+    record.evidence = uniqueEvidence.slice(0, 4);
+  }
+  return record;
+}
+
+function sanitizeRawPhaseOutput(phase: ReviewPhase, raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return raw;
+  }
+  const record = raw as Record<string, unknown>;
+  if (phase === 'extract' && Array.isArray(record.requirements)) {
+    return {
+      ...record,
+      requirements: record.requirements.slice(0, 220).map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+          return entry;
+        }
+        const item = entry as Record<string, unknown>;
+        return {
+          ...item,
+          candidateId: typeof item.candidateId === 'string' ? item.candidateId.trim() : item.candidateId,
+          summary: clampText(item.summary, 380),
+          kind: typeof item.kind === 'string' ? item.kind.trim().toLowerCase() : item.kind,
+        };
+      }),
+    };
+  }
+  if (phase === 'individual' && Array.isArray(record.reviews)) {
+    return {
+      ...record,
+      reviews: record.reviews.map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+          return entry;
+        }
+        const review = entry as Record<string, unknown>;
+        return {
+          ...review,
+          id: typeof review.id === 'string' ? review.id.trim() : review.id,
+          feasibility: typeof review.feasibility === 'string' ? review.feasibility.trim().toLowerCase() : review.feasibility,
+          testReadiness: typeof review.testReadiness === 'string' ? review.testReadiness.trim().toLowerCase() : review.testReadiness,
+          findings: Array.isArray(review.findings)
+            ? review.findings.slice(0, 8).map(sanitizeRawFinding)
+            : review.findings,
+        };
+      }),
+    };
+  }
+  if (phase === 'set' && Array.isArray(record.findings)) {
+    return {
+      ...record,
+      findings: record.findings.slice(0, 12).map(sanitizeRawFinding),
+    };
+  }
+  return raw;
+}
+
 function makeGenerator(model: ReviewModel, signal?: AbortSignal) {
   return async <Schema extends z.ZodType, Result>(
     phase: ReviewPhase,
@@ -187,21 +291,21 @@ function makeGenerator(model: ReviewModel, signal?: AbortSignal) {
   ): Promise<Result> => {
     const jsonSchema = transportSchema(schema);
     let correction = '';
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       signal?.throwIfAborted();
       try {
         const result = await model.generate({
           phase, instructions: instructions + correction, data, schema: jsonSchema, signal,
         });
-        const parsed = schema.safeParse(result);
+        const parsed = schema.safeParse(sanitizeRawPhaseOutput(phase, result));
         if (!parsed.success) {
           const firstProblem = parsed.error.issues[0];
           const path = firstProblem?.path.filter((part) => typeof part !== 'symbol').join('.') || 'root';
-          throw invalidOutput(`The response does not match the required schema at ${path}.`);
+          throw invalidOutput(`The response does not match the required schema at ${path} (${firstProblem?.message ?? 'invalid'}).`);
         }
         return validate(parsed.data);
       } catch (error) {
-        if (!(error instanceof ReviewError) || error.code !== 'INVALID_MODEL_OUTPUT' || attempt === 1) {
+        if (!(error instanceof ReviewError) || error.code !== 'INVALID_MODEL_OUTPUT' || attempt === 2) {
           throw error;
         }
         correction = `\nA prior response failed validation: ${error.message} Return a new complete response.`;
@@ -279,23 +383,31 @@ function verifyExtraction(
 ): InventoryEntry[] {
   const ordered = blocks.flatMap(({ block, candidates }) => candidates.map((candidate) => ({ block, candidate })));
   const positions = new Map(ordered.map(({ candidate }, index) => [candidate.id, index]));
+  const singleCandidateByBlock = new Map(
+    blocks
+      .filter(({ candidates }) => candidates.length === 1)
+      .map(({ block, candidates }) => [block.id, candidates[0]!.id]),
+  );
   const covered = new Set<string>();
   const excerpts = new Map<string, { kind: Requirement['kind']; summary: string }>();
   const inventory = extracted.flatMap((item): InventoryEntry[] => {
-    const position = positions.get(item.candidateId);
+    const resolvedId = positions.has(item.candidateId)
+      ? item.candidateId
+      : (singleCandidateByBlock.get(item.candidateId) ?? item.candidateId);
+    const position = positions.get(resolvedId);
     const match = position === undefined ? undefined : ordered[position];
     const summary = item.summary.trim();
     if (position === undefined || !match || !summary) {
       throw invalidOutput('Use a listed candidate identifier exactly as written and supply its summary.');
     }
-    const previous = excerpts.get(item.candidateId);
+    const previous = excerpts.get(resolvedId);
     if (previous) {
       if (previous.summary !== summary || previous.kind !== item.kind) {
-        throw invalidOutput(`Assign one obligation to candidate ${item.candidateId}, or choose separate candidates.`);
+        throw invalidOutput(`Assign one obligation to candidate ${resolvedId}, or choose separate candidates.`);
       }
       return [];
     }
-    excerpts.set(item.candidateId, { summary, kind: item.kind });
+    excerpts.set(resolvedId, { summary, kind: item.kind });
     const { block, candidate } = match;
     covered.add(block.id);
     return [{
@@ -341,9 +453,15 @@ function orderReviews(reviews: z.infer<typeof itemReview>[], items: readonly Req
     const hasBlocker = (area: 'development' | 'testing') => review.findings.some((finding) =>
       finding.kind === 'defect' && finding.severity === 'blocker'
       && (finding.affects === area || finding.affects === 'both'));
-    if ((review.feasibility === 'infeasible' && !hasBlocker('development'))
-      || (review.testReadiness === 'blocked' && !hasBlocker('testing'))) {
-      throw invalidOutput(`${id} needs a blocker defect with an explanation and an action for any blocked area.`);
+    if (review.feasibility === 'infeasible' && !hasBlocker('development')) {
+      throw invalidOutput(
+        `${id} has feasibility="infeasible", which requires a finding on ${id} with kind="defect", severity="blocker", and affects="development" or "both" (or set feasibility="conditional").`,
+      );
+    }
+    if (review.testReadiness === 'blocked' && !hasBlocker('testing')) {
+      throw invalidOutput(
+        `${id} has testReadiness="blocked", which requires a finding on ${id} with kind="defect", severity="blocker", and affects="testing" or "both" (or set testReadiness="conditional").`,
+      );
     }
     return review;
   });
@@ -355,17 +473,30 @@ function verifySetFindings(
   catalog: readonly Requirement[],
 ): UnnumberedFinding[] {
   const byId = new Map(blocks.map((block) => [block.id, block]));
+  const blockByReqId = new Map(catalog.map(({ id, source }) => [id, source.blockId]));
   const requirementsByBlock = new Map<string, string[]>();
   for (const { id, source } of catalog) {
     const ids = requirementsByBlock.get(source.blockId) ?? [];
     ids.push(id);
     requirementsByBlock.set(source.blockId, ids);
   }
+  const resolveBlockId = (key: string): string => {
+    if (byId.has(key)) {
+      return key;
+    }
+    const base = key.replace(/\.\d+$/u, '');
+    if (base !== key && byId.has(base)) {
+      return base;
+    }
+    return blockByReqId.get(key) ?? key;
+  };
   return findings.map(({ evidence, ...finding }) => {
     verifyFindingProse(finding);
-    const references = [...new Set(evidence)];
+    const references = [...new Set(evidence.map(resolveBlockId))];
     if (finding.kind === 'defect' && finding.criterion === 'consistency' && references.length < 2) {
-      throw invalidOutput('A conflict between requirements must identify both independent source passages.');
+      throw invalidOutput(
+        `A conflict between requirements ("${finding.description.slice(0, 80)}") used criterion="consistency" with only ${references.length} block ID (${references.join(', ')}). Either cite at least two distinct block IDs in evidence, or change criterion to "completeness" or "boundaries".`,
+      );
     }
     const linked = references.map((key): Evidence => {
       const block = byId.get(key);

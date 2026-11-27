@@ -5,6 +5,7 @@ import { codexModel } from './codex.js';
 
 const geminiDefault = 'gemini-4-hydrogen';
 const localDefault = 'qwen3.5:9b';
+const codexDefault = 'gpt-6.2-sol';
 const localDefaultBaseUrl = 'http://127.0.0.1:11434/v1';
 const geminiTimeout = 270_000;
 const localTimeout = 510_000;
@@ -17,17 +18,37 @@ const geminiThinkingLevels: Record<ReviewPhase, ThinkingLevel> = {
   set: ThinkingLevel.MEDIUM,
 };
 
+function normalizeGeminiModel(model: string): string {
+  return model.replace(/^models\//iu, '');
+}
+
+function resolveModelName(
+  provider: ProviderId,
+  environment: NodeJS.ProcessEnv,
+  configuredProvider: string,
+): string {
+  const generic = provider === configuredProvider ? environment.LLM_MODEL?.trim() : undefined;
+  if (provider === 'gemini') {
+    return normalizeGeminiModel(environment.GEMINI_MODEL?.trim() || generic || geminiDefault);
+  }
+  if (provider === 'local') {
+    return environment.LOCAL_MODEL?.trim() || generic || localDefault;
+  }
+  return environment.CODEX_MODEL?.trim() || generic || codexDefault;
+}
+
 export function createReviewModel(
   environment = process.env,
   fetcher?: typeof fetch,
   providerOverride?: ProviderId,
 ): ReviewModel {
-  const provider = providerOverride ?? (environment.LLM_PROVIDER?.trim().toLowerCase() || 'gemini');
+  const configured = environment.LLM_PROVIDER?.trim().toLowerCase() || 'gemini';
+  const provider = providerOverride ?? configured;
   if (provider === 'codex') {
-    return codexModel(environment.CODEX_MODEL?.trim() || 'gpt-6.2-sol');
+    return codexModel(resolveModelName('codex', environment, configured));
   }
   if (provider === 'local') {
-    const model = environment.LOCAL_MODEL?.trim() || localDefault;
+    const model = resolveModelName('local', environment, configured);
     const url = localEndpoint(environment.LOCAL_BASE_URL?.trim() || localDefaultBaseUrl);
     return localModel(model, url, fetcher ?? fetch);
   }
@@ -38,7 +59,7 @@ export function createReviewModel(
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     throw new ReviewError('MODEL_CONFIG', 'Set GEMINI_API_KEY in the environment or .env file.');
   }
-  return geminiModel(environment.GEMINI_MODEL?.trim() || geminiDefault, apiKey, fetcher);
+  return geminiModel(resolveModelName('gemini', environment, configured), apiKey, fetcher);
 }
 
 export async function detectAvailableProviders(
@@ -50,11 +71,11 @@ export async function detectAvailableProviders(
 
   const apiKey = environment.GEMINI_API_KEY?.trim();
   const geminiOption: ProviderOption | undefined = apiKey && apiKey !== 'MY_GEMINI_API_KEY'
-    ? { id: 'gemini', provider: 'Gemini', model: environment.GEMINI_MODEL?.trim() || geminiDefault }
+    ? { id: 'gemini', provider: 'Gemini', model: resolveModelName('gemini', environment, configured) }
     : undefined;
 
   let localOption: ProviderOption | undefined;
-  const localModelName = environment.LOCAL_MODEL?.trim() || localDefault;
+  const localModelName = resolveModelName('local', environment, configured);
   const localBaseUrl = environment.LOCAL_BASE_URL?.trim() || localDefaultBaseUrl;
   try {
     const probeUrl = localModelsEndpoint(localBaseUrl);
@@ -67,7 +88,7 @@ export async function detectAvailableProviders(
   }
 
   const codexOption: ProviderOption | undefined = configured === 'codex'
-    ? { id: 'codex', provider: 'Codex CLI', model: environment.CODEX_MODEL?.trim() || 'gpt-6.2-sol' }
+    ? { id: 'codex', provider: 'Codex CLI', model: resolveModelName('codex', environment, configured) }
     : undefined;
 
   const byId: Partial<Record<ProviderId, ProviderOption>> = {
@@ -238,9 +259,18 @@ function parseModelJson(value: unknown, truncated: boolean): unknown {
   if (truncated || typeof value !== 'string' || !value.trim()) {
     throw new ReviewError('INVALID_MODEL_OUTPUT', 'The model did not return a complete JSON document.');
   }
+  const cleaned = value.replace(/^\uFEFF/u, '').trim();
   try {
-    return JSON.parse(value);
+    return JSON.parse(cleaned);
   } catch {
+    const fenced = cleaned.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu)?.[1]?.trim();
+    if (fenced) {
+      try {
+        return JSON.parse(fenced);
+      } catch {
+        // Fall through to standard invalid JSON error.
+      }
+    }
     throw new ReviewError('INVALID_MODEL_OUTPUT', 'The model returned invalid JSON.');
   }
 }

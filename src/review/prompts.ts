@@ -55,9 +55,11 @@ Feasibility: feasible if credible within stated constraints; conditional when a 
 must be satisfied; unknown when evidence needed to judge is missing; infeasible only on evidence of
 incompatible constraints. TestReadiness: ready for an objective check, conditional if a detail must be
 specified, blocked if a material pass condition cannot be determined. Keep findings local to the item.
-Use infeasible or blocked only with a blocker defect, grounded in the item, describing why and
-indicating the corresponding area (development for infeasible, testing for blocked). Use conditional
-or unknown when clarification or feasibility evidence could resolve it.
+STRICT INVARIANT: Use feasibility="infeasible" ONLY when that item's findings array includes at least
+one finding with kind="defect", severity="blocker", and affects="development" or "both". Use
+testReadiness="blocked" ONLY when that item's findings array includes at least one finding with
+kind="defect", severity="blocker", and affects="testing" or "both". Otherwise use "conditional" or
+"unknown".
 Leave cross-section conflicts for the full-document pass. When a finding depends on missing context,
 state precisely what needs to be specified and why. Return an empty findings list for sound items.
 Keep checks local to the obligation as stated. Its references to a linked contract and documented
@@ -83,11 +85,14 @@ and say which evidence is needed. Do not invent deadlines or resources and do no
 uncertainty as an implementation failure. Essential missing cases and unresolved constraints can be
 anchored to the section that creates the obligation to define them.
 
-Each finding's evidence is an array of one to four source block IDs verbatim. For conflicting rules
-cite two independent passages that establish different outcomes for the same scenario. Before calling
-a conflict a blocker, check whether that scenario can satisfy both clauses without a new decision.
-Confirm any claim of missing behavior against all sections, including examples and tables.
-Cite source statements instead of headings where available. Focus on concrete cross-item
+Each finding's evidence is an array of one to four source block IDs verbatim.
+STRICT INVARIANT: Use criterion="consistency" with kind="defect" ONLY when citing AT LEAST TWO
+DISTINCT source block IDs in "evidence" that establish conflicting outcomes for the same scenario.
+For any gap, ambiguity, or missing rule anchored to only ONE block ID, use criterion="completeness",
+"boundaries", or "feasibility" instead of "consistency".
+Before calling a conflict a blocker, check whether that scenario can satisfy both clauses without a
+new decision. Confirm any claim of missing behavior against all sections, including examples and
+tables. Cite source statements instead of headings where available. Focus on concrete cross-item
 or system-wide issues. Skip observations about the same behavior and consequence already noted in
 the earlier findings, even when the wording or criterion differs. A narrowly scoped specification
 needs only the coverage its stated goal requires.
@@ -114,9 +119,11 @@ FINTECH / BANKING AUDIT MODE IS ACTIVE.
 In addition to standard set checks, audit the whole specification for critical financial-system gaps
 grounded in the document's scope:
 - Idempotency & duplicate-event handling across retries, webhooks, queues, and state transitions.
-- Currency consistency, precision/rounding, and boundary inclusivity across rules, API payloads, and examples.
-- Timezone & period-cutoff consistency (e.g., month/day boundary resets vs processing/settlement timestamps).
+- Currency precision, rounding rules, and boundary inclusivity across rules, API payloads, and examples.
+- Timezone & period-cutoff semantics (e.g., month/day boundary resets vs processing/settlement timestamps).
 - Reversals, chargebacks, cancellations, and out-of-order events affecting balances, limits, or alerts.
 - Authorization, tenant/account ownership checks, PII/PCI data masking, and immutable audit logging for state changes.
-Assign security/audit/masking gaps to owner "security" and anchor every finding to existing source block IDs.
+Assign security/audit/masking gaps to owner "security" and anchor every finding to existing non-heading source block IDs.
+Remember: use criterion="completeness" or "boundaries" for missing FinTech rules anchored to a single block;
+use criterion="consistency" ONLY when two or more distinct block IDs directly contradict each other.
 `;

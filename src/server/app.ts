@@ -298,7 +298,7 @@ const handleApiError: ErrorRequestHandler = (error, _request, response, next) =>
 
 function publicError(error: unknown): WebErrorCode {
   if (error instanceof ReviewError) {
-    console.error(`Review request failed (${error.code}).`);
+    console.error(`Review request failed (${error.code}): ${error.message}`);
     return error.code;
   }
   console.error('Review request failed (INTERNAL_ERROR).');
